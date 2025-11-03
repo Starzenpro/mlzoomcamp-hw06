@@ -1,0 +1,203 @@
+import pandas as pd
+import numpy as np
+from sklearn.model_selection import train_test_split
+from sklearn.feature_extraction import DictVectorizer
+from sklearn.tree import DecisionTreeRegressor
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.metrics import mean_squared_error
+import xgboost as xgb
+import warnings
+warnings.filterwarnings('ignore')
+
+# Download the dataset
+print("Downloading dataset...")
+import os
+os.system('wget -q https://raw.githubusercontent.com/alexeygrigorev/datasets/master/car_fuel_efficiency.csv')
+
+# Load the data
+df = pd.read_csv('car_fuel_efficiency.csv')
+print(f"Dataset shape: {df.shape}")
+
+# Preparation: Fill missing values with zeros
+df = df.fillna(0)
+
+# Do train/validation/test split with 60%/20%/20% distribution
+df_full_train, df_test = train_test_split(df, test_size=0.2, random_state=1)
+df_train, df_val = train_test_split(df_full_train, test_size=0.25, random_state=1)
+
+print(f"Train shape: {df_train.shape}")
+print(f"Validation shape: {df_val.shape}")
+print(f"Test shape: {df_test.shape}")
+
+# Reset indices
+df_train = df_train.reset_index(drop=True)
+df_val = df_val.reset_index(drop=True)
+df_test = df_test.reset_index(drop=True)
+
+# Prepare target variables
+y_train = df_train.fuel_efficiency_mpg.values
+y_val = df_val.fuel_efficiency_mpg.values
+y_test = df_test.fuel_efficiency_mpg.values
+
+# Remove target from features
+del df_train['fuel_efficiency_mpg']
+del df_val['fuel_efficiency_mpg']
+del df_test['fuel_efficiency_mpg']
+
+# Use DictVectorizer to turn dataframes into matrices
+train_dict = df_train.to_dict(orient='records')
+val_dict = df_val.to_dict(orient='records')
+
+dv = DictVectorizer(sparse=True)
+X_train = dv.fit_transform(train_dict)
+X_val = dv.transform(val_dict)
+
+print("\n=== Question 1 ===")
+# Train a decision tree with max_depth=1
+dt = DecisionTreeRegressor(max_depth=1, random_state=1)
+dt.fit(X_train, y_train)
+
+# Get the feature used for splitting
+feature_names = dv.get_feature_names_out()
+tree_feature = feature_names[dt.tree_.feature[0]]
+print(f"Feature used for splitting: {tree_feature}")
+
+print("\n=== Question 2 ===")
+# Train random forest with n_estimators=10
+rf = RandomForestRegressor(n_estimators=10, random_state=1, n_jobs=-1)
+rf.fit(X_train, y_train)
+
+y_pred = rf.predict(X_val)
+rmse = np.sqrt(mean_squared_error(y_val, y_pred))
+print(f"RMSE with n_estimators=10: {rmse:.3f}")
+
+print("\n=== Question 3 ===")
+# Experiment with n_estimators from 10 to 200
+best_rmse = float('inf')
+best_n = 0
+stopping_point = None
+
+for n in range(10, 201, 10):
+    rf = RandomForestRegressor(n_estimators=n, random_state=1, n_jobs=-1)
+    rf.fit(X_train, y_train)
+    
+    y_pred = rf.predict(X_val)
+    rmse = np.sqrt(mean_squared_error(y_val, y_pred))
+    
+    print(f"n_estimators={n}: RMSE = {rmse:.3f}")
+    
+    if rmse < best_rmse - 0.001:  # Consider 3 decimal places
+        best_rmse = rmse
+        best_n = n
+        stopping_point = n
+    elif stopping_point is None:
+        stopping_point = n
+
+print(f"RMSE stops improving after n_estimators = {stopping_point}")
+
+print("\n=== Question 4 ===")
+# Try different max_depth values
+best_depth = None
+best_rmse_depth = float('inf')
+
+for depth in [10, 15, 20, 25]:
+    rmse_scores = []
+    
+    for n in range(10, 201, 10):
+        rf = RandomForestRegressor(n_estimators=n, max_depth=depth, random_state=1, n_jobs=-1)
+        rf.fit(X_train, y_train)
+        
+        y_pred = rf.predict(X_val)
+        rmse = np.sqrt(mean_squared_error(y_val, y_pred))
+        rmse_scores.append(rmse)
+    
+    mean_rmse = np.mean(rmse_scores)
+    print(f"max_depth={depth}: Mean RMSE = {mean_rmse:.3f}")
+    
+    if mean_rmse < best_rmse_depth:
+        best_rmse_depth = mean_rmse
+        best_depth = depth
+
+print(f"Best max_depth: {best_depth}")
+
+print("\n=== Question 5 ===")
+# Train model for feature importance
+rf_importance = RandomForestRegressor(n_estimators=10, max_depth=20, random_state=1, n_jobs=-1)
+rf_importance.fit(X_train, y_train)
+
+# Get feature importances
+importances = rf_importance.feature_importances_
+feature_importance_dict = dict(zip(feature_names, importances))
+
+# Check the specific features mentioned
+features_to_check = ['vehicle_weight', 'horsepower', 'acceleration', 'engine_displacement']
+print("Feature importances:")
+for feature in features_to_check:
+    # Find the actual feature name in the vectorized features
+    matching_features = [f for f in feature_importance_dict.keys() if feature in f]
+    if matching_features:
+        importance = max([feature_importance_dict[f] for f in matching_features])
+        print(f"{feature}: {importance:.4f}")
+
+# Find the most important feature overall
+most_important_feature = max(feature_importance_dict, key=feature_importance_dict.get)
+print(f"Most important feature: {most_important_feature}")
+
+print("\n=== Question 6 ===")
+# XGBoost implementation
+# Prepare data for XGBoost
+dtrain = xgb.DMatrix(X_train, label=y_train)
+dval = xgb.DMatrix(X_val, label=y_val)
+
+watchlist = [(dtrain, 'train'), (dval, 'val')]
+
+# Test eta=0.3
+xgb_params_03 = {
+    'eta': 0.3, 
+    'max_depth': 6,
+    'min_child_weight': 1,
+    'objective': 'reg:squarederror',
+    'nthread': 8,
+    'seed': 1,
+    'verbosity': 1,
+}
+
+print("Training with eta=0.3...")
+model_03 = xgb.train(xgb_params_03, dtrain, num_boost_round=100, evals=watchlist, verbose_eval=False)
+y_pred_03 = model_03.predict(dval)
+rmse_03 = np.sqrt(mean_squared_error(y_val, y_pred_03))
+print(f"RMSE with eta=0.3: {rmse_03:.3f}")
+
+# Test eta=0.1
+xgb_params_01 = {
+    'eta': 0.1, 
+    'max_depth': 6,
+    'min_child_weight': 1,
+    'objective': 'reg:squarederror',
+    'nthread': 8,
+    'seed': 1,
+    'verbosity': 1,
+}
+
+print("Training with eta=0.1...")
+model_01 = xgb.train(xgb_params_01, dtrain, num_boost_round=100, evals=watchlist, verbose_eval=False)
+y_pred_01 = model_01.predict(dval)
+rmse_01 = np.sqrt(mean_squared_error(y_val, y_pred_01))
+print(f"RMSE with eta=0.1: {rmse_01:.3f}")
+
+if rmse_03 < rmse_01:
+    best_eta = 0.3
+elif rmse_01 < rmse_03:
+    best_eta = 0.1
+else:
+    best_eta = "Both equal"
+
+print(f"Best eta: {best_eta}")
+
+print("\n=== SUMMARY OF ANSWERS ===")
+print(f"Q1: {tree_feature}")
+print(f"Q2: {rmse:.3f}")
+print(f"Q3: {stopping_point}")
+print(f"Q4: {best_depth}")
+print(f"Q5: {most_important_feature}")
+print(f"Q6: {best_eta}")
